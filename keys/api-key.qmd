@@ -1,0 +1,247 @@
+---
+title: "Working with APIs in R"
+author: "Nathaniel Grimes"
+date: today
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  message: false
+  warning: false
+---
+
+```{r setup}
+# install.packages("devtools")
+# 
+# # Run once devtools is successfully installed
+# devtools::install_github("cfree14/wcfish", force=T)
+
+library(sf)
+library(rnaturalearth)
+library(tidyverse)
+library(jsonlite)
+library(here)
+library(wcfish)
+library(rerddap)
+
+```
+
+# API used in Shiny App
+
+[Tyler's Phish API](https://tylerclavelle.shinyapps.io/thePhactory/)
+
+see https://docs.phish.net/examples for API documentation.
+
+Also, check out https://shiny.posit.co/r/articles/share/shinyapps/ to deploy your Shiny app online for other users.  Free account is limited to 25 hours of user time per month, and better than nothing!
+
+# Accessing IUCN API
+
+- first: add API key to .Renviron and why do it this way?
+    - in console: `usethis::edit_r_environ()`
+    - add line with a useful recognizable name and your API key
+    - e.g., `IUCN_KEY=12345678`
+- second: accessing API key
+    - now in your code, you can access this key with `api_key <- Sys.getenv('IUCN_KEY')`
+- if no personal API key yet, use the API demo one: 
+    - 9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee
+
+```{r}
+api_key <- Sys.getenv('IUCN_KEY')
+
+api_key <- '9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee'
+```
+
+## Get the IUCN Redlist version: look up the endpoint on the reference!
+
+The documentation for the IUCN RedList REST API is very thorough, and will be useful throughout this lab to identify various endpoints for different types of queries we want to perform: https://apiv3.iucnredlist.org/api/v3/docs
+
+Version endpoint: `/api/v3/version` (no token needed!)
+
+```{r}
+### append the endpoint to the domain name: 
+domain_name <- 'http://apiv3.iucnredlist.org'
+version_end <- 'api/v3/version'
+
+version_url <- file.path(domain_name, version_end)
+api_version <- jsonlite::fromJSON(version_url)
+api_version$version
+```
+
+## Get a count of how many species have been assessed
+
+Here we need to use the token to access this endpoint.
+
+spp count endpoint: `/api/v3/speciescount?token='YOUR TOKEN'`
+
+```{r}
+count_stem <- 'api/v3/speciescount?token=%s' 
+  ### a format string for sprintf - %s means replace this with character string var;
+  ### lots of numeric formats supported, 
+  ### e.g., sprintf('%f', pi) vs sprintf('%.3f', pi)
+count_end <- sprintf(count_stem, api_key)
+count_url <- file.path(domain_name, count_end)
+
+spp_count <- jsonlite::fromJSON(count_url)
+spp_count$count
+```
+
+## Get a page of results
+
+Now we can also add parameter values to the endpoint.
+
+page endpoint: `/api/v3/species/page/:page_number?token='YOUR TOKEN'`
+
+```{r}
+page_stem <- 'api/v3/species/page/%s?token=%s'
+page_end <- sprintf(page_stem, 1, api_key) ### multiple variables into format string
+page_url <- file.path(domain_name, page_end)
+
+spp_page1 <- fromJSON(page_url)
+
+```
+
+Convert the extinction risk from the `spp_page1` object to an ordered factor going from Least Concerned to Extinct. Filter out observations that have `na` in the category column.
+
+Plot the result as a bar graph to see the number of species in each designation.
+
+```{r}
+### convert extinction risk into factor and plot counts
+spp_df <- spp_page1$result %>%
+  mutate(category = factor(category, levels = c('LC', 'NT', 'VU', 'EN', 'CR', 'EX'))) %>%
+  filter(!is.na(category))
+
+ggplot(spp_df) +
+  geom_bar(aes(x = category, fill = category)) +
+  scale_fill_brewer(palette = 'RdYlGn', direction = -1) +
+  theme_minimal()
+```
+
+
+## Get current and historic assessment info for a species
+
+historic assessments endpoint: `/api/v3/species/history/name/:name?token='YOUR TOKEN'`
+
+Note, spaces won't work in a URL - need to replace them with `%20`
+
+```{r}
+hist_stem <- 'api/v3/species/history/name/%s?token=%s'
+spp <- 'Dermochelys%20coriacea'
+hist_end <- sprintf(hist_stem, spp, api_key)
+hist_url <- file.path(domain_name, hist_end)
+
+spp_hist <- fromJSON(hist_url)
+
+```
+
+
+What year did Leatherback Turtles become Critically Endangered? What is their most recent status? 
+
+```{r}
+spp_hist_df <- spp_hist$result
+
+spp_hist_df
+```
+
+
+
+## Pull threats and narrative, and extract information on gear types
+
+Threats: `/api/v3/threats/species/name/:name?token='YOUR TOKEN'`
+Narratives: `/api/v3/species/narrative/:name?token='YOUR TOKEN'`
+
+```{r}
+threats_stem <- 'api/v3/threats/species/name/%s?token=%s'
+thr_url <- file.path(domain_name, sprintf(threats_stem, spp, api_key))
+spp_thr <- fromJSON(thr_url)$result
+
+narratives_stem <- 'api/v3/species/narrative/%s?token=%s'
+narr_url <- file.path(domain_name, sprintf(narratives_stem, spp, api_key))
+spp_narr <- fromJSON(narr_url)$result
+
+spp_narr$threats
+```
+
+
+Note that the IUCN Red List site literally just calls its own API to build each page when you type in a species name!
+
+# ERDDAP
+
+NOAA's [ERDDAP (Environmental Research Division Data Access Program)](https://coastwatch.pfeg.noaa.gov/erddap/index.html) site is home to thousands of datasets on environmental, biogeochemical, and ecological quantities, from satellites/remote sensing and in-situ sensors etc.  These datasets can be searched through their website, but can also be accessed programmatically.  
+
+There are functions in the `rerrdap` package to help you look up datasets. I think it's best to look directly at the search results on the website to find which datasets meet your needs, because it can be hard to see the complete structure of the datasets from the package.  But, once you know what you want, you can use the package to access the data.
+
+[Read the vignette on the package](https://cran.r-project.org/web/packages/rerddap/vignettes/Using_rerddap.html). They provide far more detail and useful suggestions to make sure you don't break your computer.
+
+Go to the website to explore. We will also see how the results compare with the function search.
+
+```{r}
+temp_search<-ed_search(query="Monthly SST")
+```
+
+
+Let's start with a dataset of sea surface temperature data off the coast of California.  We can use the `rerddap::info` function to look up the dataset ID, and then use the `rerddap::griddap` function to access the data.
+
+```{r}
+file_id<-rerddap::info(datasetid = "NOAA_DHW_monthly", 
+                       url = "https://coastwatch.pfeg.noaa.gov/erddap/")
+
+start="2024-01-01"
+
+end="2024-12-31"
+
+sst<-griddap(datasetx=file_id,
+             time=c(start,end),
+             latitude=c(30,42),
+             longitude=c(-115,-130),
+             stride=2)$data %>% 
+  rename(t=time,temp=sea_surface_temperature) 
+```
+
+
+Filter out the data for just one time unit (e.g. one month). Make a map of the data using `geom_tiles()`. Why can I not use `geom_sf()`?
+
+```{r}
+sst |> 
+  filter(t==unique(t)[1]) |> 
+ggplot() +
+  geom_tile(aes(x=longitude,y=latitude,fill=temp)) +
+  scale_fill_gradientn(colors=pals::ocean.thermal(20),guide='colorbar')+
+  theme_minimal()
+```
+
+
+We can see the outline of the different countries. Let's add some cool sf layers to the map. From the `wcfish` package is a really cool layer that has administrative blocks that CDFW uses to monitor fish catch. Load the package and there is a hidden object called `blocks`. Check it out with `head()`. 
+
+Bring in the state boundaries from the `rnaturalearth` package. 
+
+Layer each `sf` onto the map of sea surface temperatures
+
+```{r}
+state<-ne_states(country='United States of America')
+
+state_sf<-st_as_sf(state) %>% 
+  filter(name %in% c('California','Nevada'))
+
+#get rid of all the extra junk
+state_sf<-state_sf[,c(9,84)]
+
+sst |> 
+  filter(t==unique(t)[1]) |> 
+ggplot() +
+  geom_tile(aes(x=longitude,y=latitude,fill=temp)) +
+  geom_sf(data=wcfish::blocks,fill=NA,color='black',size=2)+
+  geom_sf(data=state_sf,fill=NA,color='black')+
+  coord_sf(xlim = c(-129,-117),ylim=c(30,42))+
+  scale_fill_gradientn(colors=pals::ocean.thermal(20),guide='colorbar')+
+  theme_minimal()+
+  labs(y='',x='',fill='SST')
+```
+
+
+Now you have access to thousands of environmental datasets. Combine these with your complete data wrangling skills to create incredible datasets to conduct powerful analyses in your future work. Good Luck! 
+
+
+
+
+

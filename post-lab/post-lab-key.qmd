@@ -1,0 +1,105 @@
+---
+title: "Lab 10: Post-lab answer key"
+author: "Nathaniel Grimes"
+date: today
+format: 
+  html:
+    embed-resources: true
+    code-fold: true
+execute:
+  message: false
+  warning: false
+---
+```{r}
+library(wcfish)
+library(tidyverse)
+library(rerddap)
+library(sf)
+library(tsibble)
+library(rnaturalearth)
+```
+
+
+
+1. Use `purrr` to loop over the following datasets and extract the data from the ERDDAP server for the time period 2022-01-01 to 2022-12-31 and the spatial extent of latitude 30 to 42 and longitude -115 to -130. Store the data in a list.
+
+```{r}
+datasets <- c("nesdisVHNSQchlaMonthly", "NOAA_DHW_monthly", "erdPH53sstdmday")
+```
+
+```{r}
+start="2022-01-01"
+end="2022-12-31"
+
+data <- datasets %>% 
+  map(~griddap(datasetx = rerddap::info(datasetid = .x, 
+                       url = "https://coastwatch.pfeg.noaa.gov/erddap/"), 
+                          time=c(start,end),
+                          latitude=c(30,42),
+                          longitude=c(-115,-130),
+               stride=5)$data)
+```
+
+2. Choose a dataset and variable you find interesting. Extract the data from the list. Change the time column to a date. Then quickly plot (don't need to make it look nice) 1 month of your data using `geom_tile` to see how it looks.
+
+Hint: You will need to remove som of the execess stuff in the character string. Check out `stringr::str_remove()` to help you.
+
+```{r}
+chol<-data[[3]] |> 
+  mutate(time = as.Date(stringr::str_remove(time, "T00:00:00Z")))
+
+one_chol<-chol |> 
+  filter(time==unique(chol$time)[1]) |> 
+  drop_na(wind_speed)
+
+ggplot()+
+geom_tile(data=one_chol,aes(x=longitude,y=latitude,fill=wind_speed))+
+  scale_fill_viridis_c()
+```
+
+3. Use the `wcfish` blocks shapefile to join your variable of interest to the blocks.
+
+Hint: Remember the `st_as_sf` and `st_crs` functions
+
+```{r}
+wind_sf = st_as_sf(chol, coords = c("longitude", "latitude"), 
+                 crs = st_crs(blocks))
+```
+
+4. Join the data to the blocks using `st_join`. Drop any nas that might exist in your variable of interest. Then summarize the data by averaging your variable of interest by block.
+
+```{r}
+wind_block<-st_join(blocks,wind_sf) |> 
+  drop_na(wind_speed) |> 
+  group_by(block_id) |> 
+  summarize(wind_speed=mean(wind_speed,na.rm=TRUE))
+```
+
+
+5. Plot the data using `geom_sf` and add the California outline from `rnaturalearth`. Make a figure caption using the quarto code chunk options.
+
+```{r}
+#| fig-cap: Average monthly wind speed in fishing grids off California. Wind speed is recorded at 10m elevation and composited over a month of daily readings from Buoys.
+
+
+state<-ne_states(country='United States of America')
+
+# I add Nevada because the gulf of California extends into Nevada from a longitude perspective. I think it makes it look better.
+
+state_sf<-st_as_sf(state) %>% 
+  filter(name %in% c('California','Nevada'))
+
+state_sf<-state_sf[,c(9,84)]
+
+ggplot()+
+  geom_sf(data=wind_block,aes(fill=wind_speed))+
+  geom_sf(data=state_sf,fill=NA,color='black')+
+  theme_minimal()+
+  scale_fill_gradientn(colours=pals::ocean.haline(10),guide = "colourbar")+
+  coord_sf(xlim = c(-129,-117),ylim=c(30,42))+
+  labs(fill="Wind Speed (m/s)")
+```
+
+6. Why might there be gaps in the grid data?
+
+**In this instance, there are gaps because of the stride skips over some grids. Therefore there is no data to average in a given grid so it was dropped from the sf. Put the stride back at 1 and you'll seen them go away. If gaps still appear, that means there is probably a na somewhere in the data.  Don't render with a stride of 1, otherwise your render will take forever. Usually you would do all the data downloads and cleaning in a separate script. Then load the resulting dataframes into the document and make beautiful images.**
