@@ -11,7 +11,7 @@ execute:
   warning: false
 ---
 
-```{r setup}
+```{r setup, output=FALSE}
 # install.packages("devtools")
 # 
 # # Run once devtools is successfully installed
@@ -49,7 +49,8 @@ Also, check out https://shiny.posit.co/r/articles/share/shinyapps/ to deploy you
 ```{r}
 api_key <- Sys.getenv('IUCN_KEY')
 
-api_key <- '9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee'
+# redundant!
+# api_key <- '9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee'
 ```
 
 ## Get the IUCN Redlist version: look up the endpoint on the reference!
@@ -104,7 +105,18 @@ spp_page1 <- fromJSON(page_url)
 Convert the extinction risk from the `spp_page1` object to an ordered factor going from Least Concerned to Extinct. Filter out observations that have `na` in the category column.
 
 Plot the result as a bar graph to see the number of species in each designation.
+```{r}
+risk = data.frame(
+  spp = spp_page1$result$scientific_name,
+  risk = as.factor(spp_page1$result$category)
+) |>
+  filter(!is.na(risk))
 
+ggplot(data=risk)+
+  geom_histogram(aes(x=risk),stat="count")
+
+
+```
 
 ## Get current and historic assessment info for a species
 
@@ -125,6 +137,15 @@ spp_hist <- fromJSON(hist_url)
 
 What year did Leatherback Turtles become Critically Endangered? What is their most recent status? 
 
+```{r}
+turtle_data = spp_hist$result |>
+  select(assess_year, category)
+
+min_year = turtle_data |>
+  filter(category == "Critically Endangered") |>
+  select(assess_year) |>
+  filter(assess_year == min(assess_year))
+```
 
 ## Pull threats and narrative, and extract information on gear types
 
@@ -145,6 +166,7 @@ spp_narr$threats
 
 
 Note that the IUCN Red List site literally just calls its own API to build each page when you type in a species name!
+
 
 # ERDDAP
 
@@ -188,7 +210,8 @@ sst |>
 ggplot() +
   geom_tile(aes(x=longitude,y=latitude,fill=temp)) +
   scale_fill_gradientn(colors=pals::ocean.thermal(20),guide='colorbar')+
-  theme_minimal()
+  theme_minimal()+
+  labs(title="Sea Surface Temperature off the California Coast (Celsius)")
 ```
 
 
